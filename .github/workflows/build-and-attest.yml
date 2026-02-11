@@ -1,0 +1,95 @@
+# =============================================================================
+# Build, push, and attest (GitHub Artifact Attestations only)
+#
+# As per: https://docs.github.com/en/actions/how-tos/secure-your-work/
+#   use-artifact-attestations/use-artifact-attestations#
+#   generating-build-provenance-for-container-images
+#
+# - Build provenance: where and how the image was built
+# - SBOM attestation: signed SBOM in GitHub's system
+# Verify with: gh attestation verify oci://ghcr.io/ORG/REPO:TAG -R ORG/REPO
+# =============================================================================
+
+name: Build, push, and attest
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-push-attest:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+      attestations: write
+
+    outputs:
+      image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}@${{ steps.docker-build-push.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{raw}}
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        id: docker-build-push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Lowercase repo name
+        id: repo
+        run: echo "repo=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
+      # -----------------------------------------------------------------------
+      # GitHub Artifact Attestations (build provenance + SBOM)
+      # -----------------------------------------------------------------------
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}
+          subject-digest: ${{ steps.docker-build-push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM (Syft)
+        id: sbom
+        uses: anchore/sbom-action@v0.15.1
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}@${{ steps.docker-build-push.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+        continue-on-error: true
+
+      - name: Generate SBOM attestation
+        if: steps.sbom.outcome == 'success'
+        uses: actions/attest-sbom@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}
+          subject-digest: ${{ steps.docker-build-push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
