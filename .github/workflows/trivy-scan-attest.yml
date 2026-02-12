@@ -23,7 +23,7 @@ jobs:
       contents: read
       attestations: write
       artifact-metadata: write
-      packages: read
+      packages: write
 
     steps:
       - name: Log in to GHCR
