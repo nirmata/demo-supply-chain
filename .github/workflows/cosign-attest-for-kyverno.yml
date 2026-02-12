@@ -1,9 +1,7 @@
 name: Cosign attest for Kyverno
 
+# Only manual run — do not trigger on tag push, so you can test "GitHub attestations only" by pushing a tag.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       subject_name:

@@ -84,7 +84,7 @@ jobs:
         id: sbom
         run: |
           ${{ steps.syft.outputs.cmd }} packages \
-            "${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}@${{ steps.docker-build-push.outputs.digest }}" \
+            "registry:${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}@${{ steps.docker-build-push.outputs.digest }}" \
             -o spdx-json="${{ github.workspace }}/sbom.spdx.json"
         working-directory: ${{ github.workspace }}
 
