@@ -22,22 +22,22 @@ spec:
                 - Pod
       verifyImages:
         - imageReferences:
-            - "ghcr.io/YOUR_ORG/*"
+            - "ghcr.io/nirmata/*"
           mutateDigest: true
           verifyDigest: true
           required: true
           attestations:
-            - predicateType: https://slsa.dev/provenance/v1
+            - type: https://slsa.dev/provenance/v1
               attestors:
                 - count: 1
                   entries:
                     - keyless:
                         issuer: https://token.actions.githubusercontent.com
-                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/build-and-attest.yml@refs/tags/v*
+                        subjectRegExp: ^https://github.com/nirmata/demo-supply-chain/.github/workflows/cosign-attest-for-kyverno.yml@refs/tags/v.*$
                         rekor:
                           url: https://rekor.sigstore.dev
                     - keyless:
                         issuer: https://token.actions.githubusercontent.com
-                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/build-and-attest.yml@refs/heads/main
+                        subject: https://github.com/nirmata/demo-supply-chain/.github/workflows/cosign-attest-for-kyverno.yml@refs/heads/main
                         rekor:
                           url: https://rekor.sigstore.dev

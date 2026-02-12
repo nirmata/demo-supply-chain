@@ -22,34 +22,22 @@ spec:
                 - Pod
       verifyImages:
         - imageReferences:
-            - "ghcr.io/YOUR_ORG/*"
+            - "ghcr.io/nirmata/*"
           mutateDigest: true
           verifyDigest: true
           required: true
           attestations:
-            - predicateType: https://in-toto.io/attestation/vulns/v0.1
+            - type: https://in-toto.io/attestation/vulns/v0.1
               attestors:
                 - count: 1
                   entries:
-                    # If attestation is produced by the reusable scan workflow.
                     - keyless:
                         issuer: https://token.actions.githubusercontent.com
-                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/trivy-scan-attest.yml@refs/tags/v*
+                        subjectRegExp: ^https://github.com/nirmata/demo-supply-chain/.github/workflows/cosign-attest-for-kyverno.yml@refs/tags/v.*$
                         rekor:
                           url: https://rekor.sigstore.dev
                     - keyless:
                         issuer: https://token.actions.githubusercontent.com
-                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/trivy-scan-attest.yml@refs/heads/main
-                        rekor:
-                          url: https://rekor.sigstore.dev
-                    # Fallback if GitHub records caller workflow as the signer identity.
-                    - keyless:
-                        issuer: https://token.actions.githubusercontent.com
-                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/build-and-attest.yml@refs/tags/v*
-                        rekor:
-                          url: https://rekor.sigstore.dev
-                    - keyless:
-                        issuer: https://token.actions.githubusercontent.com
-                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/build-and-attest.yml@refs/heads/main
+                        subject: https://github.com/nirmata/demo-supply-chain/.github/workflows/cosign-attest-for-kyverno.yml@refs/heads/main
                         rekor:
                           url: https://rekor.sigstore.dev

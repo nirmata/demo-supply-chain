@@ -1,0 +1,159 @@
+name: Cosign attest for Kyverno
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      subject_name:
+        description: Fully-qualified image name, without tag.
+        required: true
+        type: string
+      subject_digest:
+        description: Image digest (for example sha256:...).
+        required: true
+        type: string
+
+jobs:
+  cosign-attest:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image subject
+        id: subject
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            subject_name="ghcr.io/${GITHUB_REPOSITORY,,}"
+            subject_digest="$(docker buildx imagetools inspect "${subject_name}:${GITHUB_REF_NAME}" --format '{{.Digest}}')"
+          else
+            subject_name="${{ inputs.subject_name }}"
+            subject_digest="${{ inputs.subject_digest }}"
+          fi
+          echo "subject_name=${subject_name}" >> "$GITHUB_OUTPUT"
+          echo "subject_digest=${subject_digest}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${subject_name}@${subject_digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0.15.1
+        id: syft
+
+      - name: Generate SLSA predicate
+        run: |
+          cat > "${{ github.workspace }}/slsa-predicate.json" <<EOF
+          {
+            "buildDefinition": {
+              "buildType": "https://github.com/actions/workflow",
+              "externalParameters": {
+                "workflow": {
+                  "ref": "${GITHUB_REF}",
+                  "repository": "https://github.com/${GITHUB_REPOSITORY}",
+                  "path": ".github/workflows/cosign-attest-for-kyverno.yml"
+                }
+              }
+            },
+            "runDetails": {
+              "builder": {
+                "id": "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/cosign-attest-for-kyverno.yml@${GITHUB_REF}"
+              },
+              "metadata": {
+                "invocationId": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+              }
+            }
+          }
+          EOF
+
+      - name: Generate SPDX SBOM
+        run: |
+          ${{ steps.syft.outputs.cmd }} packages \
+            "${{ steps.subject.outputs.image_ref }}" \
+            -o spdx-json="${{ github.workspace }}/sbom.spdx.json"
+
+      - name: Scan image with Trivy
+        id: trivy
+        run: |
+          echo "scan_started=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          docker run --rm \
+            -e TRIVY_USERNAME="${{ github.actor }}" \
+            -e TRIVY_PASSWORD="${{ secrets.GITHUB_TOKEN }}" \
+            -v "${{ github.workspace }}:/work" \
+            aquasec/trivy:latest image \
+            --format json \
+            --output /work/scan-report.json \
+            "${{ steps.subject.outputs.image_ref }}"
+          echo "scan_finished=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Build vulnerability predicate
+        run: |
+          jq \
+            --arg started "${{ steps.trivy.outputs.scan_started }}" \
+            --arg finished "${{ steps.trivy.outputs.scan_finished }}" \
+            '{
+              scanner: {
+                uri: "pkg:github/aquasecurity/trivy",
+                version: (.Metadata?.Version // .Metadata?.Tools?[0]?.Version // "unknown"),
+                db: {
+                  uri: "https://github.com/aquasecurity/trivy-db",
+                  lastUpdate: $finished
+                },
+                result: [
+                  (.Results[]?.Vulnerabilities[]?) |
+                  {
+                    vulnerability: {
+                      id: .VulnerabilityID,
+                      severity: [
+                        {
+                          method: "trivy",
+                          score: (.Severity // "UNKNOWN")
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              metadata: {
+                scanStartedOn: $started,
+                scanFinishedOn: $finished
+              }
+            }' "${{ github.workspace }}/scan-report.json" > "${{ github.workspace }}/scan-predicate.json"
+
+      - name: Cosign attest SLSA provenance
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign attest \
+            --predicate "${{ github.workspace }}/slsa-predicate.json" \
+            --type https://slsa.dev/provenance/v1 \
+            "${{ steps.subject.outputs.image_ref }}"
+
+      - name: Cosign attest SPDX SBOM
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign attest \
+            --predicate "${{ github.workspace }}/sbom.spdx.json" \
+            --type https://spdx.dev/Document/v2.3 \
+            "${{ steps.subject.outputs.image_ref }}"
+
+      - name: Cosign attest vulnerability report
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign attest \
+            --predicate "${{ github.workspace }}/scan-predicate.json" \
+            --type https://in-toto.io/attestation/vulns/v0.1 \
+            "${{ steps.subject.outputs.image_ref }}"
