@@ -20,6 +20,8 @@ The implementation is intentionally split into multiple workflows:
   - generates vulnerability attestation (`https://in-toto.io/attestation/vulns/v0.1`).
 - `verify-attestations.yml`
   - pipeline policy gate that verifies all three predicate types with `gh attestation verify`.
+- `cosign-attest-for-kyverno.yml`
+  - generates Kyverno/Cosign-compatible OCI attestations (SLSA, SPDX SBOM, vulnerability report).
 
 Trigger model:
 1. Tag push (`v*`) triggers `build-and-attest.yml` and `trivy-scan-attest.yml` independently.
@@ -88,6 +90,8 @@ Each policy enforces one attestation type for `ghcr.io/YOUR_ORG/*` images:
 - SPDX SBOM (`https://spdx.dev/Document/v2.3`)
 - Vulnerability scan report (`https://in-toto.io/attestation/vulns/v0.1`)
 
+For cluster admission, run `cosign-attest-for-kyverno.yml` for the target image digest so attestations are available in the OCI registry for Kyverno verification.
+
 Apply them individually:
 
 ```bash
@@ -96,7 +100,7 @@ kubectl apply -f kyverno/verify-sbom-attestation.yaml
 kubectl apply -f kyverno/verify-vuln-scan-attestation.yaml
 ```
 
-Before applying, replace `YOUR_ORG` in each policy with your GitHub org/user.
+Before applying in a different repo/org, replace `nirmata` in each policy with your GitHub org/user.
 
 ## Reference
 
