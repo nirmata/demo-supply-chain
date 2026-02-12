@@ -1,0 +1,139 @@
+name: Trivy scan and attest
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      subject_name:
+        description: Fully-qualified image name, without tag.
+        required: true
+        type: string
+      subject_digest:
+        description: Image digest (for example sha256:...).
+        required: true
+        type: string
+
+jobs:
+  trivy-scan-attest:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+      artifact-metadata: write
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image subject
+        id: subject
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            subject_name="ghcr.io/${GITHUB_REPOSITORY,,}"
+            image_tag_ref="${subject_name}:${GITHUB_REF_NAME}"
+            echo "Waiting for image to be available: ${image_tag_ref}"
+            for attempt in $(seq 1 30); do
+              if docker pull "${image_tag_ref}" >/dev/null 2>&1; then
+                break
+              fi
+              if [ "${attempt}" -eq 30 ]; then
+                echo "Image not available after waiting: ${image_tag_ref}" >&2
+                exit 1
+              fi
+              sleep 20
+            done
+            repo_digest="$(docker inspect --format='{{index .RepoDigests 0}}' "${image_tag_ref}")"
+            subject_digest="${repo_digest##*@}"
+          else
+            subject_name="${{ inputs.subject_name }}"
+            subject_digest="${{ inputs.subject_digest }}"
+          fi
+          echo "subject_name=${subject_name}" >> "$GITHUB_OUTPUT"
+          echo "subject_digest=${subject_digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan image with Trivy (JSON)
+        id: trivy
+        run: |
+          echo "scan_started=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          docker run --rm \
+            -e TRIVY_USERNAME="${{ github.actor }}" \
+            -e TRIVY_PASSWORD="${{ secrets.GITHUB_TOKEN }}" \
+            -v "${{ github.workspace }}:/work" \
+            aquasec/trivy:latest image \
+            --format json \
+            --output /work/scan-report.json \
+            "${{ steps.subject.outputs.subject_name }}@${{ steps.subject.outputs.subject_digest }}"
+          echo "scan_finished=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload scan report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-report
+          path: ${{ github.workspace }}/scan-report.json
+
+      - name: Build vulnerability predicate
+        run: |
+          jq \
+            --arg started "${{ steps.trivy.outputs.scan_started }}" \
+            --arg finished "${{ steps.trivy.outputs.scan_finished }}" \
+            '{
+              scanner: {
+                uri: "pkg:github/aquasecurity/trivy",
+                version: (.Metadata?.Version // .Metadata?.Tools?[0]?.Version // "unknown"),
+                db: {
+                  uri: "https://github.com/aquasecurity/trivy-db",
+                  lastUpdate: $finished
+                },
+                result: [
+                  (.Results[]?.Vulnerabilities[]?) |
+                  {
+                    vulnerability: {
+                      id: .VulnerabilityID,
+                      severity: [
+                        {
+                          method: "trivy",
+                          score: (.Severity // "UNKNOWN")
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              metadata: {
+                scanStartedOn: $started,
+                scanFinishedOn: $finished
+              }
+            }' "${{ github.workspace }}/scan-report.json" > "${{ github.workspace }}/scan-predicate.json"
+
+      - name: Generate vulnerability scan attestation
+        uses: actions/attest@v2
+        with:
+          subject-name: ${{ steps.subject.outputs.subject_name }}
+          subject-digest: ${{ steps.subject.outputs.subject_digest }}
+          predicate-type: https://in-toto.io/attestation/vulns/v0.1
+          predicate-path: ${{ github.workspace }}/scan-predicate.json
+          push-to-registry: true
+
+      - name: Write image metadata
+        run: |
+          jq -n \
+            --arg subject_name "${{ steps.subject.outputs.subject_name }}" \
+            --arg subject_digest "${{ steps.subject.outputs.subject_digest }}" \
+            '{
+              subject_name: $subject_name,
+              subject_digest: $subject_digest
+            }' > "${{ github.workspace }}/image-metadata.json"
+
+      - name: Upload image metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-metadata
+          path: ${{ github.workspace }}/image-metadata.json

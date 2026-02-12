@@ -1,0 +1,55 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-vuln-scan-attestation
+  annotations:
+    policies.kyverno.io/title: Verify vulnerability scan attestation
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Enforces vulnerability scan attestations on container images.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: require-vulnerability-scan
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/YOUR_ORG/*"
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestations:
+            - predicateType: https://in-toto.io/attestation/vulns/v0.1
+              attestors:
+                - count: 1
+                  entries:
+                    # If attestation is produced by the reusable scan workflow.
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/trivy-scan-attest.yml@refs/tags/v*
+                        rekor:
+                          url: https://rekor.sigstore.dev
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/trivy-scan-attest.yml@refs/heads/main
+                        rekor:
+                          url: https://rekor.sigstore.dev
+                    # Fallback if GitHub records caller workflow as the signer identity.
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/build-and-attest.yml@refs/tags/v*
+                        rekor:
+                          url: https://rekor.sigstore.dev
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: https://github.com/YOUR_ORG/demo-supply-chain/.github/workflows/build-and-attest.yml@refs/heads/main
+                        rekor:
+                          url: https://rekor.sigstore.dev

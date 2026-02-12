@@ -1,0 +1,76 @@
+name: Verify attestation policy
+
+on:
+  workflow_run:
+    workflows:
+      - Trivy scan and attest
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: Image reference to verify (for example oci://ghcr.io/org/repo@sha256:...).
+        required: true
+        type: string
+      repo_slug:
+        description: Repository slug owning the attestation (for example org/repo).
+        required: true
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download image metadata from scan workflow
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: image-metadata
+          path: ${{ github.workspace }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve verification target
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            subject_name="$(jq -r '.subject_name' "${{ github.workspace }}/image-metadata.json")"
+            subject_digest="$(jq -r '.subject_digest' "${{ github.workspace }}/image-metadata.json")"
+            image_ref="oci://${subject_name}@${subject_digest}"
+            repo_slug="${GITHUB_REPOSITORY}"
+          else
+            image_ref="${{ inputs.image_ref }}"
+            repo_slug="${{ inputs.repo_slug }}"
+          fi
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
+          echo "repo_slug=${repo_slug}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify required attestations with retry
+        run: |
+          verify_with_retry() {
+            predicate_type="$1"
+            for attempt in $(seq 1 30); do
+              if gh attestation verify "${{ steps.target.outputs.image_ref }}" \
+                -R "${{ steps.target.outputs.repo_slug }}" \
+                --predicate-type "${predicate_type}"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 30 ]; then
+                echo "Timed out verifying predicate: ${predicate_type}" >&2
+                return 1
+              fi
+              sleep 20
+            done
+          }
+
+          verify_with_retry https://slsa.dev/provenance/v1
+          verify_with_retry https://spdx.dev/Document/v2.3
+          verify_with_retry https://in-toto.io/attestation/vulns/v0.1

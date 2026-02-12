@@ -1,14 +1,31 @@
-# Demo: GitHub Artifact Attestations (provenance + SBOM)
+# Demo: Supply-chain controls in pipeline and cluster
 
-This repo builds a container image and adds **GitHub artifact attestations** only: build provenance and SBOM. No image signing (no Cosign). Validation is done with GitHub’s attestation flow as in the [GitHub doc](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations#generating-build-provenance-for-container-images).
+This repo uses separate controls for each use case:
+- **Pipeline controls** (GitHub Actions) to generate and verify attestations.
+- **Cluster controls** (Kyverno) to enforce attestation presence at admission time.
 
-## What this workflow does
+No image signing keys are managed directly in this repo. Validation is done with GitHub/Sigstore attestation flow as in the [GitHub doc](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations#generating-build-provenance-for-container-images).
 
-1. Build and push the image to GHCR.
-2. **Build provenance attestation** – where and how the image was built.
-3. **SBOM** (Syft) + **SBOM attestation** – signed SBOM in GitHub’s system.
+## Pipeline workflows
 
-Attestations appear in the Actions run and can be verified with `gh attestation verify`.
+The implementation is intentionally split into multiple workflows:
+
+- `build-and-attest.yml`
+  - builds + pushes image,
+  - generates SLSA provenance attestation,
+  - generates SPDX SBOM + SBOM attestation.
+- `trivy-scan-attest.yml`
+  - performs Trivy scan,
+  - creates vulnerability predicate,
+  - generates vulnerability attestation (`https://in-toto.io/attestation/vulns/v0.1`).
+- `verify-attestations.yml`
+  - pipeline policy gate that verifies all three predicate types with `gh attestation verify`.
+
+Trigger model:
+1. Tag push (`v*`) triggers `build-and-attest.yml` and `trivy-scan-attest.yml` independently.
+2. `verify-attestations.yml` runs after `trivy-scan-attest.yml` (`workflow_run`) and retries verification until all attestations are visible.
+
+Each workflow can also be run manually from Actions with inputs.
 
 ## How to run
 
@@ -48,6 +65,38 @@ gh attestation verify oci://ghcr.io/YOUR_ORG/demo-supply-chain:v1.0.0 \
   --predicate-type https://spdx.dev/Document/v2.3 \
   --format json
 ```
+
+For vulnerability scan attestation:
+
+```bash
+gh attestation verify oci://ghcr.io/YOUR_ORG/demo-supply-chain:v1.0.0 \
+  -R YOUR_ORG/demo-supply-chain \
+  --predicate-type https://in-toto.io/attestation/vulns/v0.1 \
+  --format json
+```
+
+## Cluster enforcement with Kyverno
+
+Policies are split by use case:
+
+- `kyverno/verify-provenance-attestation.yaml`
+- `kyverno/verify-sbom-attestation.yaml`
+- `kyverno/verify-vuln-scan-attestation.yaml`
+
+Each policy enforces one attestation type for `ghcr.io/YOUR_ORG/*` images:
+- SLSA provenance (`https://slsa.dev/provenance/v1`)
+- SPDX SBOM (`https://spdx.dev/Document/v2.3`)
+- Vulnerability scan report (`https://in-toto.io/attestation/vulns/v0.1`)
+
+Apply them individually:
+
+```bash
+kubectl apply -f kyverno/verify-provenance-attestation.yaml
+kubectl apply -f kyverno/verify-sbom-attestation.yaml
+kubectl apply -f kyverno/verify-vuln-scan-attestation.yaml
+```
+
+Before applying, replace `YOUR_ORG` in each policy with your GitHub org/user.
 
 ## Reference
 
