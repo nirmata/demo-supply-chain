@@ -78,7 +78,7 @@ jobs:
       - name: Generate SPDX SBOM
         run: |
           ${{ steps.syft.outputs.cmd }} packages \
-            "${{ steps.subject.outputs.image_ref }}" \
+            "registry:${{ steps.subject.outputs.image_ref }}" \
             -o spdx-json="${{ github.workspace }}/sbom.spdx.json"
 
       - name: Scan image with Trivy
