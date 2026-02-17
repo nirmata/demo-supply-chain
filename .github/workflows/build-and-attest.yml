@@ -44,6 +44,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Lowercase repo name
+        id: repo
+        run: echo "repo=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -52,6 +56,7 @@ jobs:
           tags: |
             type=semver,pattern={{raw}}
             type=raw,value=latest
+            type=raw,value=github-attestation
 
       - name: Build and push Docker image
         id: docker-build-push
@@ -62,12 +67,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Lowercase repo name
-        id: repo
-        run: echo "repo=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
-
       # -----------------------------------------------------------------------
-      # GitHub Artifact Attestations (build provenance + SBOM)
+      # GitHub Artifact Attestations (Luc testbed style: provenance + SBOM)
       # -----------------------------------------------------------------------
       - name: Generate build provenance attestation
         uses: actions/attest-build-provenance@v3
@@ -76,30 +77,23 @@ jobs:
           subject-digest: ${{ steps.docker-build-push.outputs.digest }}
           push-to-registry: true
 
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0.15.1
-        id: syft
-
-      - name: Generate SBOM (Syft)
-        id: sbom
-        run: |
-          ${{ steps.syft.outputs.cmd }} packages \
-            "registry:${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}@${{ steps.docker-build-push.outputs.digest }}" \
-            -o spdx-json="${{ github.workspace }}/sbom.spdx.json"
-        working-directory: ${{ github.workspace }}
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}@${{ steps.docker-build-push.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
 
       - name: Upload SBOM artifact
-        if: steps.sbom.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: sbom
-          path: ${{ github.workspace }}/sbom.spdx.json
+          path: sbom.spdx.json
 
-      - name: Generate SBOM attestation
-        if: steps.sbom.outcome == 'success'
-        uses: actions/attest-sbom@v2
+      - name: Create SBOM attestation
+        uses: actions/attest-sbom@v3
         with:
           subject-name: ${{ env.REGISTRY }}/${{ steps.repo.outputs.repo }}
           subject-digest: ${{ steps.docker-build-push.outputs.digest }}
-          sbom-path: ${{ github.workspace }}/sbom.spdx.json
+          sbom-path: sbom.spdx.json
           push-to-registry: true
